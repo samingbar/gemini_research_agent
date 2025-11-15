@@ -1,7 +1,4 @@
-from ..decorators import tool
-
-@tool
 def browse_page(url: str, instructions: str) -> str:
-    """Fetch data from a webpage."""
-    print("[TOOL] browse_page")
+    """Legacy browse_page tool (not registered with Gemini)."""
+    print("[TOOL] browse_page (legacy)")
     return f"Summary of {url} with: {instructions}"

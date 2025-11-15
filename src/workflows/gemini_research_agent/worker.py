@@ -4,7 +4,7 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 from temporalio.contrib.pydantic import pydantic_data_converter
 from .workflow import AgentLoopWorkflow
-from .activities import llm_step_activity, tool_activity
+from .activities import llm_step_activity, tool_activity, render_report_pdf
 from .config import TASK_QUEUE, ADDRESS
 
 interrupt_event = asyncio.Event()
@@ -18,7 +18,7 @@ async def main():
         client,
         task_queue=TASK_QUEUE,
         workflows=[AgentLoopWorkflow],
-        activities=[llm_step_activity, tool_activity],
+        activities=[llm_step_activity, tool_activity, render_report_pdf],
         ):
             # Keep the worker alive until interrupted (Ctrl+C during demos)
             await interrupt_event.wait()

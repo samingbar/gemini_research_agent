@@ -1,12 +1,12 @@
 from pydantic import BaseModel
-from ..decorators import tool
+
 
 class CompetitorRequest(BaseModel):
     sector: str
     company_name: str
 
-@tool
+
 def identify_competitors(req: CompetitorRequest) -> str:
-    """Identify competitors."""
-    print("[TOOL] identify_competitors")
+    """Legacy identify_competitors tool (not registered with Gemini)."""
+    print("[TOOL] identify_competitors (legacy)")
     return "Meta, Amazon, Microsoft"
