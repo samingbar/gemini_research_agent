@@ -12,7 +12,15 @@ from ...resources.custom_types.types import (
 from ...resources.myprompts.history import PromptHistory
 from ...resources.myprompts.models import SystemPrompt, TaskPrompt, BasePrompt
 from ...resources.myprompts.provider import LLMProvider
-from ...resources.prompts.prompts import SYSTEM_PROMPT, MANAGED_AGENT_TASK
+from ...resources.prompts.prompts import (
+    SYSTEM_PROMPT,
+    MANAGED_AGENT_TASK,
+    PLANNING_PROMPT_INITIAL_PLAN,
+    PLANNING_PROMPT_UPDATE_FACTS_PRE,
+    PLANNING_PROMPT_UPDATE_FACTS_POST,
+    PLANNING_PROMPT_UPDATE_PLAN_PRE,
+    PLANNING_PROMPT_UPDATE_PLAN_POST,
+)
 
 
 @workflow.defn
@@ -24,7 +32,7 @@ class AgentLoopWorkflow:
         self.max_steps: int = 30
 
     @workflow.run
-    async def run(self, input: AgentInput) -> str:
+    async def run(self, input: AgentInput) -> dict:
         """
         Main loop:
         - Build initial prompts from the task
@@ -34,12 +42,30 @@ class AgentLoopWorkflow:
         """
 
         # Build initial prompt history using the prompt models
-        system_prompt = SystemPrompt(text=SYSTEM_PROMPT.strip())
+        final_answer_instructions = (
+            "\n\nWhen you have completed all necessary tool calls and analysis "
+            "and are ready to give the final result, respond with a single "
+            "message starting with 'FINAL ANSWER:' followed by the final report. "
+        )
+
+        non_repetition_instructions = (
+            "You must not call a tool again with the same arguments if it has already succeeded, "
+            "unless new information makes that result invalid."
+        )
+
+        system_prompt = SystemPrompt(text=(SYSTEM_PROMPT.strip() + non_repetition_instructions + final_answer_instructions))
         task_text = MANAGED_AGENT_TASK.format(task_description=input.task).strip()
         task_prompt = TaskPrompt(text=task_text)
 
         self.history.add(system_prompt)
         self.history.add(task_prompt)
+
+        # Seed the model with an initial explicit plan.
+        initial_plan_prompt = BasePrompt(
+            role="user",
+            text=PLANNING_PROMPT_INITIAL_PLAN.strip(),
+        )
+        self.history.add(initial_plan_prompt)
 
         # Assemble into provider-specific messages for Gemini
         history_messages = self.history.to_messages(provider=LLMProvider.GEMINI)
@@ -73,7 +99,28 @@ class AgentLoopWorkflow:
             # ----- Step 2: Check if workflow is finished -----
             if llm_result.is_final:
                 workflow.logger.info("Agent finished.")
-                return llm_result.output_text or ""
+                raw_text = llm_result.output_text or ""
+
+                # Strip the FINAL ANSWER marker to get pure Markdown
+                markdown = raw_text
+                stripped = raw_text.lstrip()
+                lower = stripped.lower()
+                if lower.startswith("final answer:"):
+                    # Find index in original stripped string, then slice after the marker
+                    marker_len = len("final answer:")
+                    markdown = stripped[marker_len:].lstrip()
+
+                # Render PDF from the Markdown report
+                pdf_b64 = await workflow.execute_activity(
+                    "render_report_pdf",
+                    markdown,
+                    schedule_to_close_timeout=timedelta(seconds=60),
+                )
+
+                return {
+                    "markdown_report": markdown,
+                    "pdf_base64": pdf_b64,
+                }
 
             # ----- Step 3: If tool call requested -----
             if llm_result.tool_call is not None:
@@ -89,6 +136,27 @@ class AgentLoopWorkflow:
                 # Add tool result to history as a tool message
                 tool_prompt = BasePrompt(role="tool", text=tool_result)
                 self.history.add(tool_prompt)
+
+                # After each tool call, explicitly update facts and plan.
+                facts_update_text = (
+                    f"{PLANNING_PROMPT_UPDATE_FACTS_PRE}\n\n"
+                    f"Latest tool: {tool_req.name}\n"
+                    f"Arguments: {tool_req.arguments}\n"
+                    f"Result:\n{tool_result}\n\n"
+                    f"{PLANNING_PROMPT_UPDATE_FACTS_POST}"
+                )
+                plan_update_text = (
+                    f"{PLANNING_PROMPT_UPDATE_PLAN_PRE}\n\n"
+                    f"Tools used so far: {', '.join(self.tools_used)}\n"
+                    f"Completed steps: validation if any validate_company call succeeded; "
+                    f"sector identification if identify_sector succeeded; "
+                    f"competitor identification if identify_competitors succeeded.\n\n"
+                    f"{PLANNING_PROMPT_UPDATE_PLAN_POST}"
+                )
+
+                self.history.add(BasePrompt(role="user", text=facts_update_text))
+                self.history.add(BasePrompt(role="user", text=plan_update_text))
+
                 history_messages = self.history.to_messages(provider=LLMProvider.GEMINI)
 
                 # Send updated history back to the LLM
@@ -101,5 +169,12 @@ class AgentLoopWorkflow:
         # Max steps reached
         workflow.logger.info("Max steps reached without final answer.")
         if last_output and last_output.output_text:
-            return last_output.output_text
-        return ""
+            # Best-effort: return whatever we have as markdown without PDF.
+            return {
+                "markdown_report": last_output.output_text,
+                "pdf_base64": "",
+            }
+        return {
+            "markdown_report": "",
+            "pdf_base64": "",
+        }

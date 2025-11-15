@@ -16,7 +16,16 @@ def build_schema_from_pydantic_model(model: type[BaseModel]):
         ptype = prop.get("type", "string")
 
         # Normalize to Gemini-compatible JSON schema
-        props[name] = {"type": ptype}
+        if ptype == "array":
+            # Gemini requires "items" for array types
+            item_schema = prop.get("items", {})
+            item_type = item_schema.get("type", "string")
+            props[name] = {
+                "type": "array",
+                "items": {"type": item_type},
+            }
+        else:
+            props[name] = {"type": ptype}
 
     return {
         "type": "object",

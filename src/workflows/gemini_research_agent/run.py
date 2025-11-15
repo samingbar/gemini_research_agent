@@ -1,5 +1,7 @@
 import asyncio
 import uuid
+import base64
+from pathlib import Path
 from pprint import PrettyPrinter
 
 from temporalio.client import Client
@@ -12,25 +14,60 @@ from .config import TASK_QUEUE, ADDRESS
 pp = PrettyPrinter(indent=1, width=120)
 
 
-async def main(prompt:str = "Temporal") -> str:
+async def main(prompt: str = "Temporal") -> dict:
     interrupt_event = asyncio.Event()
     client = await Client.connect(
         ADDRESS,
-        data_converter=pydantic_data_converter,    
+        data_converter=pydantic_data_converter,
     )
 
     handle = await client.start_workflow(
         AgentLoopWorkflow.run,
         AgentInput(task=prompt),
-        id = f"durable-test-id-{uuid.uuid4()}",
-        task_queue = TASK_QUEUE
+        id=f"durable-test-id-{uuid.uuid4()}",
+        task_queue=TASK_QUEUE,
     )
 
     try:
         result = await handle.result()
-        pp.pprint(result)
+
+        markdown = result.get("markdown_report", "")
+        pdf_b64 = result.get("pdf_base64", "")
+
+        # Write PDF to disk if available
+        pdf_path = None
+        if pdf_b64:
+            pdf_bytes = base64.b64decode(pdf_b64)
+            safe_name = "".join(c for c in prompt if c.isalnum() or c in ("-", "_")) or "report"
+            pdf_path = Path(f"{safe_name}_report.pdf")
+            pdf_path.write_bytes(pdf_bytes)
+
+        print("\n=== Agent Result (Markdown) ===\n")
+        print(markdown)
+
+        if pdf_path:
+            print(f"\nPDF written to: {pdf_path}")
+        else:
+            print("\nNo PDF generated (empty pdf_base64).")
+
+        return result
     except Exception as exc:
         print(f"Workflow finished with exception: {exc}")
+        return {}
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Run the Gemini research agent for a given company."
+    )
+    parser.add_argument(
+        "company",
+        nargs="?",
+        default="Temporal",
+        help="Company name to analyze (default: Temporal)",
+    )
+    args = parser.parse_args()
+
+    asyncio.run(main(prompt=args.company))
