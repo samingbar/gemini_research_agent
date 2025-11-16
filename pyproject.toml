@@ -9,4 +9,5 @@ dependencies = [
     "pydantic>=2.12.4",
     "temporalio>=1.19.0",
     "reportlab>=4.2.0",
+    "openai>=2.8.0",
 ]

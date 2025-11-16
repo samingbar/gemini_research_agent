@@ -7,7 +7,7 @@ from pprint import PrettyPrinter
 from temporalio.client import Client
 from temporalio.contrib.pydantic import pydantic_data_converter
 
-from ...resources.custom_types.types import AgentInput
+from src.resources.custom_types.types import AgentInput
 from .workflow import AgentLoopWorkflow
 from .config import TASK_QUEUE, ADDRESS
 

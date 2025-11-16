@@ -5,40 +5,46 @@ from urllib.request import urlopen
 
 from google import genai
 
-from .mytools.decorators import tool
-from .custom_types.types import (
+from src.resources.mytools.decorators import tool
+from src.resources.mytools.llm import call_json_llm, call_text_llm
+from src.resources.custom_types.types import (
     ValidateCompanyArgs,
     IdentifySectorArgs,
     IdentifyCompetitorsArgs,
     BrowsePageArgs,
     GenerateReportArgs,
 )
+from src.resources.myprompts.provider import LLMProvider
+from .config import PROVIDER, MODEL
 
-client = genai.Client()
 
 def _normalize_company_name(name: str) -> str:
     return re.sub(r"\s+", " ", name or "").strip()
 
 
-def _call_gemini_json(prompt: str) -> str:
-    """
-    Helper to call Gemini with a JSON-only response contract.
-    Returns the raw JSON string from the first candidate.
-    """
-    config = genai.types.GenerateContentConfig(
-        response_mime_type="application/json",
-    )
-    resp = client.models.generate_content(
-        model="gemini-2.5-pro",
-        contents=prompt,
-        config=config,
-    )
-    msg = resp.candidates[0].content
-    part = msg.parts[0]
-    txt = getattr(part, "text", None)
-    if txt is None:
-        txt = str(part)
-    return txt
+def _provider_name(provider) -> str:
+    if isinstance(provider, LLMProvider):
+        return provider.value.lower()
+    if hasattr(provider, "value"):
+        return str(getattr(provider, "value")).lower()
+    return str(provider).lower()
+
+
+_PROVIDER_NAME = _provider_name(PROVIDER)
+
+
+if _PROVIDER_NAME == "gemini":
+    client = genai.Client()
+elif _PROVIDER_NAME == "openai":
+    try:
+        from openai import OpenAI  # type: ignore[import-not-found]
+    except ImportError as exc:  # pragma: no cover - runtime configuration issue
+        raise RuntimeError(
+            "OpenAI provider selected but the 'openai' package is not installed."
+        ) from exc
+    client = OpenAI()
+else:
+    raise NotImplementedError(f"Unsupported LLM provider for tools: {PROVIDER!r}")
 
 
 @tool
@@ -76,7 +82,7 @@ Respond with a single JSON object with fields:
 
 Do not include any text before or after the JSON.
 """
-    return _call_gemini_json(prompt)
+    return call_json_llm(prompt=prompt, client=client, provider=PROVIDER, model=MODEL)
 
 
 @tool
@@ -109,7 +115,7 @@ If you genuinely cannot determine a sector, use "Unknown sector" with low confid
 
 Do not include any text before or after the JSON.
 """
-    return _call_gemini_json(prompt)
+    return call_json_llm(prompt=prompt, client=client, provider=PROVIDER, model=MODEL)
 
 
 @tool
@@ -148,7 +154,7 @@ and explain why in the reason.
 
 Do not include any text before or after the JSON.
 """
-    return _call_gemini_json(prompt)
+    return call_json_llm(prompt=prompt, client=client, provider=PROVIDER, model=MODEL)
 
 
 def _strip_html(text: str) -> str:
@@ -225,35 +231,27 @@ def generate_report(args: GenerateReportArgs) -> str:
     company = _normalize_company_name(args.company_name)
     context_text = args.context or ""
 
-    header = f"# Competitive Analysis Report: {company}\n"
+    prompt = f"""
+You are an expert in competitive strategy and business analysis.
 
-    executive_summary = (
-        "## Executive Summary\n\n"
-        "This report summarizes the competitive landscape for the company above, "
-        "highlighting key competitors, strategic themes, and areas of opportunity.\n\n"
-    )
+Your task is to write a clear, well-structured Markdown report for the company "{company}".
 
-    comparison_table = (
-        "## Comparison Table\n\n"
-        "| Competitor | Strategy Type | Key Tactics | Strengths | Weaknesses |\n"
-        "|-----------|---------------|-------------|-----------|------------|\n"
-        "| (fill)    | (fill)        | (fill)      | (fill)    | (fill)     |\n\n"
-        "_The agent should refine this table using the latest tool outputs and reasoning in context._\n\n"
-    )
+Use the context below, which may include facts, tool outputs, and prior reasoning:
 
-    insights = (
-        "## Actionable Insights\n\n"
-        f"- Identify 3–5 high-impact initiatives {company} can take based on the latest context.\n"
-        "- Focus on differentiation vs. the strongest competitors.\n"
-        "- Consider product, pricing, distribution, brand, and innovation levers.\n\n"
-    )
+```text
+{context_text}
+```
 
-    context_section = (
-        "## Source Context\n\n"
-        "The following raw context was used to inform this report:\n\n"
-        "```text\n"
-        f"{context_text}\n"
-        "```\n"
-    )
+Produce a Markdown report with these sections, in order:
+- Executive Summary
+- Comparison Table
+- Actionable Insights
 
-    return header + "\n" + executive_summary + comparison_table + insights + context_section
+Guidelines:
+- In Executive Summary, briefly describe the competitive landscape and key themes.
+- In Comparison Table, include at least the focal company and up to three key competitors, with columns for Strategy Type, Key Tactics, Strengths, and Weaknesses.
+- In Actionable Insights, list 3–5 concrete, high-impact recommendations for "{company}" based on the context.
+- Do not include any additional commentary outside the Markdown report itself.
+"""
+
+    return call_text_llm(prompt=prompt, client=client, provider=PROVIDER, model=MODEL)
